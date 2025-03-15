@@ -1,0 +1,7 @@
+uvicorn
+fastapi
+pydantic_settings
+slowapi
+requests
+python-multipart
+pillow

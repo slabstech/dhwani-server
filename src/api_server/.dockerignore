@@ -1,0 +1,82 @@
+samples
+
+*.log
+venv
+*.nemo
+
+# Ignore all Python files except those explicitly copied
+!kannada_female.wav
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore all virtual environments
+venv/
+env/
+.env/
+.venv/
+__pycache__/
+
+# Ignore build artifacts
+build/
+dist/
+*.egg-info/
+
+# Ignore local version control files
+.git/
+.gitignore
+
+# Ignore local environment files
+.env
+
+# Ignore local log files
+*.log
+
+# Ignore all node_modules
+node_modules/
+
+# Ignore all Docker-related files
+Dockerfile
+docker-compose.yml
+
+# Ignore all local development files
+.vscode/
+.idea/
+.pytest_cache/
+
+# Ignore all test files
+*.test.*
+*.spec.*
+*_test.*
+*_spec.*
+
+# Ignore all backup files
+*.bak
+*.swp
+*.tmp
+*.orig
+
+# Ignore all documentation files
+*.md
+*.txt
+*.rst
+
+# Ignore all temporary files
+*.tmp
+*.temp
+*.cache
+
+# Ignore all user-specific files
+*.user
+*.prefs
+*.rc
+
+# Ignore all unnecessary directories and files
+__pycache__
+__pypackages__
+
+
+!requirements.txt
+
+#!model_requirements.txt
+#!server_requirements.txt
