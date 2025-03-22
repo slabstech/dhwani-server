@@ -1,4 +1,6 @@
 import jwt
+import csv
+from io import StringIO
 from datetime import datetime, timedelta
 from fastapi import HTTPException, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -178,6 +180,43 @@ async def register(register_request: RegisterRequest, current_user: str = Depend
     tokens = await create_access_token(user_id=register_request.username)
     logger.info(f"Registered and generated token for user: {register_request.username} by admin {current_user}")
     return TokenResponse(access_token=tokens["access_token"], refresh_token=tokens["refresh_token"], token_type="bearer")
+
+async def register_bulk_users(csv_content: str, current_user: str) -> dict:
+    db = SessionLocal()
+    result = {"successful": [], "failed": []}
+    
+    # Parse CSV content
+    csv_reader = csv.DictReader(StringIO(csv_content))
+    if not {"username", "password"}.issubset(csv_reader.fieldnames):
+        db.close()
+        raise HTTPException(status_code=400, detail="CSV must contain 'username' and 'password' columns")
+    
+    for row in csv_reader:
+        username = row["username"].strip()
+        password = row["password"].strip()
+        
+        if not username or not password:
+            result["failed"].append({"username": username, "reason": "Empty username or password"})
+            continue
+        
+        existing_user = db.query(User).filter_by(username=username).first()
+        if existing_user:
+            result["failed"].append({"username": username, "reason": "Username already exists"})
+            continue
+        
+        try:
+            hashed_password = pwd_context.hash(password)
+            new_user = User(username=username, password=hashed_password, is_admin=False)
+            db.add(new_user)
+            result["successful"].append(username)
+        except Exception as e:
+            result["failed"].append({"username": username, "reason": str(e)})
+    
+    db.commit()
+    db.close()
+    
+    logger.info(f"Bulk registration by {current_user}: {len(result['successful'])} succeeded, {len(result['failed'])} failed")
+    return result
 
 async def refresh_token(credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)) -> TokenResponse:
     token = credentials.credentials

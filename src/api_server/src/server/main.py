@@ -1,5 +1,8 @@
 import argparse
 import io
+import os
+import shutil
+import sqlite3
 from time import time
 from typing import List, Optional
 from abc import ABC, abstractmethod
@@ -7,7 +10,7 @@ from abc import ABC, abstractmethod
 import uvicorn
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse, FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, field_validator, Field
 from slowapi import Limiter
@@ -16,7 +19,7 @@ import requests
 from PIL import Image
 
 # Import from auth.py
-from utils.auth import get_current_user, get_current_user_with_admin, login, refresh_token, register, TokenResponse, Settings, LoginRequest, RegisterRequest, bearer_scheme
+from utils.auth import get_current_user, get_current_user_with_admin, login, refresh_token, register, TokenResponse, Settings, LoginRequest, RegisterRequest, bearer_scheme, register_bulk_users
 
 # Assuming these are in your project structure
 from config.tts_config import SPEED, ResponseFormat, config as tts_config
@@ -104,6 +107,18 @@ class AudioProcessingResponse(BaseModel):
     class Config:
         schema_extra = {"example": {"result": "Processed audio output"}} 
 
+class BulkRegisterResponse(BaseModel):
+    successful: List[str] = Field(..., description="List of successfully registered usernames")
+    failed: List[dict] = Field(..., description="List of failed registrations with reasons")
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "successful": ["user1", "user2"],
+                "failed": [{"username": "user3", "reason": "Username already exists"}]
+            }
+        }
+
 # TTS Service Interface
 class TTSService(ABC):
     @abstractmethod
@@ -183,6 +198,128 @@ async def register_user(
     current_user: str = Depends(get_current_user_with_admin)
 ):
     return await register(register_request, current_user)
+
+@app.post("/v1/register_bulk", 
+          response_model=BulkRegisterResponse,
+          summary="Register Multiple Users via CSV",
+          description="Upload a CSV file with 'username' and 'password' columns to register multiple users. Requires admin access. Rate limited to 10 requests per minute per user.",
+          tags=["Authentication"],
+          responses={
+              200: {"description": "Bulk registration result", "model": BulkRegisterResponse},
+              400: {"description": "Invalid CSV format or data"},
+              401: {"description": "Unauthorized - Token required"},
+              403: {"description": "Admin access required"},
+              429: {"description": "Rate limit exceeded"}
+          })
+@limiter.limit("10/minute")
+async def register_bulk(
+    request: Request,
+    file: UploadFile = File(..., description="CSV file with 'username' and 'password' columns"),
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+):
+    current_user = await get_current_user_with_admin(credentials)
+    
+    if not file.filename.endswith('.csv'):
+        raise HTTPException(status_code=400, detail="File must be a CSV")
+    
+    try:
+        content = await file.read()
+        csv_content = content.decode("utf-8")
+        result = await register_bulk_users(csv_content, current_user)
+        return BulkRegisterResponse(**result)
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid CSV encoding; must be UTF-8")
+    except Exception as e:
+        logger.error(f"Bulk registration error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error processing CSV: {str(e)}")
+
+@app.get("/v1/export_db",
+         summary="Export User Database",
+         description="Download the current user database as a SQLite file. Requires admin access.",
+         tags=["Authentication"],
+         responses={
+             200: {"description": "SQLite database file", "content": {"application/octet-stream": {"example": "Binary SQLite file"}}},
+             401: {"description": "Unauthorized - Token required"},
+             403: {"description": "Admin access required"},
+             500: {"description": "Error exporting database"}
+         })
+async def export_db(
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)
+):
+    current_user = await get_current_user_with_admin(credentials)
+    db_path = "users.db"
+    
+    if not os.path.exists(db_path):
+        raise HTTPException(status_code=500, detail="Database file not found")
+    
+    logger.info(f"Database export requested by admin: {current_user}")
+    return FileResponse(
+        db_path,
+        filename="users.db",
+        media_type="application/octet-stream"
+    )
+
+@app.post("/v1/import_db",
+          summary="Import User Database",
+          description="Upload a SQLite database file to replace the current user database. Requires admin access. The uploaded file must be a valid SQLite database with the expected schema.",
+          tags=["Authentication"],
+          responses={
+              200: {"description": "Database imported successfully"},
+              400: {"description": "Invalid database file"},
+              401: {"description": "Unauthorized - Token required"},
+              403: {"description": "Admin access required"},
+              500: {"description": "Error importing database"}
+          })
+async def import_db(
+    request: Request,
+    file: UploadFile = File(..., description="SQLite database file to import"),
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)
+):
+    current_user = await get_current_user_with_admin(credentials)
+    db_path = "users.db"
+    temp_path = "users_temp.db"
+    
+    try:
+        # Save the uploaded file temporarily
+        content = await file.read()
+        with open(temp_path, "wb") as f:
+            f.write(content)
+        
+        # Validate the uploaded file is a valid SQLite database
+        conn = sqlite3.connect(temp_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users';")
+        if not cursor.fetchone():
+            conn.close()
+            os.remove(temp_path)
+            raise HTTPException(status_code=400, detail="Uploaded file is not a valid user database")
+        
+        # Check if the schema matches (basic validation)
+        cursor.execute("PRAGMA table_info(users);")
+        columns = [col[1] for col in cursor.fetchall()]
+        expected_columns = ["username", "password", "is_admin"]
+        if not all(col in columns for col in expected_columns):
+            conn.close()
+            os.remove(temp_path)
+            raise HTTPException(status_code=400, detail="Uploaded database has an incompatible schema")
+        
+        conn.close()
+        
+        # Replace the current database
+        shutil.move(temp_path, db_path)
+        logger.info(f"Database imported successfully by admin: {current_user}")
+        return {"message": "Database imported successfully"}
+    
+    except sqlite3.Error as e:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        logger.error(f"SQLite error during import: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Invalid SQLite database: {str(e)}")
+    except Exception as e:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        logger.error(f"Error importing database: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error importing database: {str(e)}")
 
 @app.post("/v1/audio/speech",
           summary="Generate Speech from Text",
