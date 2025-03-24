@@ -6,17 +6,17 @@ from typing import OrderedDict, Tuple
 from tts_config import config
 
 # Device setup
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-TORCH_DTYPE = torch.bfloat16 if DEVICE != "cpu" else torch.float32
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+TORCH_DTYPE = torch.bfloat16 if DEVICE.type != "cpu" else torch.float32
 
 class TTSModelManager:
     def __init__(self):
         self.model_tokenizer: OrderedDict[
             str, Tuple[ParlerTTSForConditionalGeneration, AutoTokenizer, AutoTokenizer]
         ] = OrderedDict()
-        self.max_length = 30
-        self.voice_cache = {}
-        self.audio_cache = {}
+        self.max_length = 50  # Reverted to baseline value
+        self.voice_cache = {}  # Reserved for future use
+        self.audio_cache = {}  # Used for caching generated audio
 
     def load_model(
         self, model_name: str
@@ -41,27 +41,41 @@ class TTSModelManager:
         if description_tokenizer.pad_token is None:
             description_tokenizer.pad_token = description_tokenizer.eos_token
 
-        # Warmup to ensure graph capture
-        if DEVICE.type == "cuda":
-            with torch.cuda.stream(torch.cuda.Stream()):
-                warmup_inputs = tokenizer("Warmup text", 
-                                        return_tensors="pt", 
-                                        padding="max_length", 
-                                        max_length=self.max_length).to(DEVICE)
-                model_kwargs = {
-                    "input_ids": warmup_inputs["input_ids"],
-                    "attention_mask": warmup_inputs["attention_mask"],
-                    "prompt_input_ids": warmup_inputs["input_ids"],
-                    "prompt_attention_mask": warmup_inputs["attention_mask"],
-                }
-                for _ in range(2):
-                    _ = model.generate(**model_kwargs)
+        # Update model configuration (from baseline)
+        model.config.pad_token_id = tokenizer.pad_token_id
+        if hasattr(model.generation_config.cache_config, 'max_batch_size'):
+            model.generation_config.cache_config.max_batch_size = 1
+        model.generation_config.cache_implementation = "static"
 
-        # Compile after warmup
-        model = torch.compile(model, mode="reduce-overhead", fullgraph=True)
+        # Compile the model (baseline approach)
+        compile_mode = "default"
+        model.forward = torch.compile(model.forward, mode=compile_mode)
+
+        # Warmup (baseline approach)
+        warmup_inputs = tokenizer(
+            "Warmup text for compilation",
+            return_tensors="pt",
+            padding="max_length",
+            max_length=self.max_length
+        ).to(DEVICE)
+        
+        model_kwargs = {
+            "input_ids": warmup_inputs["input_ids"],
+            "attention_mask": warmup_inputs["attention_mask"],
+            "prompt_input_ids": warmup_inputs["input_ids"],
+            "prompt_attention_mask": warmup_inputs["attention_mask"],
+            "max_new_tokens": 100,  # Added for better graph capture
+            "do_sample": True,  # Added for consistency with endpoint
+            "top_p": 0.9,
+            "temperature": 0.7,
+        }
+        
+        n_steps = 1  # Baseline uses 1 step for "default" mode
+        for _ in range(n_steps):
+            _ = model.generate(**model_kwargs)
 
         logger.info(
-            f"Loaded {model_name} with Flash Attention and full compilation in {time() - start:.2f} seconds"
+            f"Loaded {model_name} with Flash Attention and compilation in {time() - start:.2f} seconds"
         )
         return model, tokenizer, description_tokenizer
 

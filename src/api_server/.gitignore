@@ -9,7 +9,7 @@ asr_venv
 # C extensions
 *.so
 *.mp3
-
+users.db
 !kannada_female.wav
 # Distribution / packaging
 .Python

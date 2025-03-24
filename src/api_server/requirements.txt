@@ -5,3 +5,11 @@ slowapi
 requests
 python-multipart
 pillow
+pyjwt
+sqlalchemy
+passlib[bcrypt]
+aiohttp
+bleach
+databases[sqlite]
+pybreaker
+cryptography
