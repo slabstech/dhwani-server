@@ -531,6 +531,7 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Add CORS Middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -538,6 +539,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Add Timing Middleware
+@app.middleware("http")
+async def add_request_timing(request: Request, call_next):
+    start_time = time()
+    response = await call_next(request)
+    end_time = time()
+    duration = end_time - start_time
+    logger.info(f"Request to {request.url.path} took {duration:.3f} seconds")
+    response.headers["X-Response-Time"] = f"{duration:.3f}"
+    return response
 
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
