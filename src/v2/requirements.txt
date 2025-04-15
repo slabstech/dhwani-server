@@ -1,0 +1,13 @@
+fastapi 
+uvicorn 
+databases[sqlite] 
+pydantic 
+pydantic-settings 
+passlib[bcrypt] 
+python-jose[cryptography] 
+cryptography 
+pybreaker 
+slowapi 
+aiohttp 
+bleach 
+pillow
